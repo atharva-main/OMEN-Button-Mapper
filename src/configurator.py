@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -52,6 +54,13 @@ try:
         save_config,
         validate_target,
     )
+    from compatibility import (
+        check_hp_conflicts,
+        check_wmi_hp_driver,
+        classify_event,
+        get_hardware_info,
+        listen_for_single_wmi_event,
+    )
 except ImportError:
     from src.app_discovery import (
         DiscoveredApp,
@@ -64,6 +73,13 @@ except ImportError:
         load_config,
         save_config,
         validate_target,
+    )
+    from src.compatibility import (
+        check_hp_conflicts,
+        check_wmi_hp_driver,
+        classify_event,
+        get_hardware_info,
+        listen_for_single_wmi_event,
     )
 
 logger = logging.getLogger("omen_remapper.configurator")
@@ -423,6 +439,210 @@ Register-ScheduledTask -TaskName '{SCHEDULED_TASK_NAME}' -Action $action -Trigge
         return False, res.stderr.strip() or "Registration failed."
 
 
+class KeyDetectorWorker(QThread):
+    """Background worker that listens for a single OMEN WMI button event."""
+
+    event_captured = Signal(object, object, str)
+
+    def __init__(self, timeout_seconds: float = 30.0, parent=None):
+        super().__init__(parent)
+        self.timeout_seconds = timeout_seconds
+        self._stop_event = threading.Event()
+
+    def run(self):
+        eid, edata, msg = listen_for_single_wmi_event(
+            self._stop_event, timeout_seconds=self.timeout_seconds
+        )
+        self.event_captured.emit(eid, edata, msg)
+
+    def stop(self):
+        self._stop_event.set()
+
+
+class CompatibilityDialog(QDialog):
+    """Interactive hardware compatibility and OMEN button detector wizard."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Hardware & OMEN Key Diagnostics")
+        self.setFixedSize(480, 500)
+        self.setWindowFlags(
+            Qt.Dialog
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowCloseButtonHint
+        )
+
+        icon_path = get_asset_path("app_icon.ico")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        self._detector_worker: KeyDetectorWorker | None = None
+        self._build_ui()
+        self._run_system_checks()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        # Header Title
+        title_label = QLabel("Hardware & OMEN Key Diagnostics")
+        title_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        layout.addWidget(title_label)
+
+        desc_label = QLabel(
+            "Verify that your HP machine exposes the OMEN ACPI WMI event "
+            "and that no background HP bloatware captures or conflicts with the key."
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("color: #444444; font-size: 11px;")
+        layout.addWidget(desc_label)
+
+        # Group 1: System & Driver Inspection
+        sys_group = QGroupBox("System & Driver Status")
+        sys_layout = QVBoxLayout(sys_group)
+        sys_layout.setContentsMargins(10, 8, 10, 8)
+        sys_layout.setSpacing(6)
+
+        self.lbl_model = QLabel("Device: Detecting...")
+        self.lbl_driver = QLabel("WMI Driver: Checking...")
+        self.lbl_conflicts = QLabel("HP Software: Scanning...")
+
+        for lbl in (self.lbl_model, self.lbl_driver, self.lbl_conflicts):
+            lbl.setFont(QFont("Segoe UI", 9))
+            lbl.setWordWrap(True)
+            sys_layout.addWidget(lbl)
+
+        layout.addWidget(sys_group)
+
+        # Group 2: Live Button Press Test
+        test_group = QGroupBox("Live OMEN Button Verification")
+        test_layout = QVBoxLayout(test_group)
+        test_layout.setContentsMargins(10, 8, 10, 8)
+        test_layout.setSpacing(8)
+
+        inst_label = QLabel(
+            "Click 'Test OMEN Key' below, then press the physical OMEN key on your keyboard."
+        )
+        inst_label.setWordWrap(True)
+        inst_label.setStyleSheet("color: #555555; font-size: 11px;")
+        test_layout.addWidget(inst_label)
+
+        test_row = QHBoxLayout()
+        self.btn_test = QPushButton("Test OMEN Key")
+        self.btn_test.setFixedWidth(120)
+        self.btn_test.clicked.connect(self._on_start_key_test)
+
+        self.btn_cancel_test = QPushButton("Cancel")
+        self.btn_cancel_test.setFixedWidth(75)
+        self.btn_cancel_test.setEnabled(False)
+        self.btn_cancel_test.clicked.connect(self._on_cancel_key_test)
+
+        test_row.addWidget(self.btn_test)
+        test_row.addWidget(self.btn_cancel_test)
+        test_row.addStretch()
+        test_layout.addLayout(test_row)
+
+        self.lbl_test_result = QLabel("Status: Ready to test.")
+        self.lbl_test_result.setWordWrap(True)
+        self.lbl_test_result.setStyleSheet("color: #444444; font-size: 11px;")
+        test_layout.addWidget(self.lbl_test_result)
+
+        layout.addWidget(test_group)
+
+        # Group 3: Guidance & Recommendations
+        tips_group = QGroupBox("Important Recommendations")
+        tips_layout = QVBoxLayout(tips_group)
+        tips_layout.setContentsMargins(10, 8, 10, 8)
+        tips_layout.setSpacing(4)
+
+        tip1 = QLabel("• <b>OMEN Gaming Hub</b>: Uninstall or close it to avoid dual launches.")
+        tip1.setStyleSheet("font-size: 11px;")
+        tip2 = QLabel("• <b>HP System Event Utility</b>: Disable in Startup Apps if on-screen notifications appear.")
+        tip2.setStyleSheet("font-size: 11px;")
+        tip3 = QLabel("• <b>HP Application Enabling Software</b>: Keep this driver installed in Device Manager.")
+        tip3.setStyleSheet("font-size: 11px;")
+
+        tips_layout.addWidget(tip1)
+        tips_layout.addWidget(tip2)
+        tips_layout.addWidget(tip3)
+        layout.addWidget(tips_group)
+
+        # Bottom Button
+        bottom_row = QHBoxLayout()
+        bottom_row.addStretch()
+        self.btn_continue = QPushButton("Continue to Button Mapper")
+        self.btn_continue.setDefault(True)
+        self.btn_continue.setFixedWidth(190)
+        self.btn_continue.clicked.connect(self.accept)
+        bottom_row.addWidget(self.btn_continue)
+
+        layout.addLayout(bottom_row)
+
+    def _run_system_checks(self):
+        info = get_hardware_info()
+        manuf = info.get("manufacturer", "Unknown")
+        model = info.get("model", "Unknown")
+        self.lbl_model.setText(f"Device: <b>{manuf} - {model}</b>")
+
+        has_driver, driver_msg = check_wmi_hp_driver()
+        if has_driver:
+            self.lbl_driver.setText("WMI Driver: <span style='color: #008000; font-weight: bold;'>[OK]</span> HP WMI Event Provider ('hpqBEvnt') is active.")
+        else:
+            self.lbl_driver.setText("WMI Driver: <span style='color: #C00000; font-weight: bold;'>[MISSING]</span> 'hpqBEvnt' class not found. Ensure HP system drivers are installed.")
+
+        conflicts = check_hp_conflicts()
+        if not conflicts:
+            self.lbl_conflicts.setText("HP Software: <span style='color: #008000; font-weight: bold;'>[OK]</span> No conflicting HP background utilities detected.")
+        else:
+            c_names = ", ".join(c["description"] for c in conflicts)
+            self.lbl_conflicts.setText(f"HP Software: <span style='color: #d83b01; font-weight: bold;'>[WARNING]</span> Detected: {c_names}. Close them to prevent key conflicts.")
+
+    def _on_start_key_test(self):
+        self.lbl_test_result.setText("Listening... Press the physical OMEN key on your keyboard now!")
+        self.lbl_test_result.setStyleSheet("color: #005fb8; font-weight: bold; font-size: 11px;")
+        self.btn_test.setEnabled(False)
+        self.btn_cancel_test.setEnabled(True)
+
+        self._detector_worker = KeyDetectorWorker(timeout_seconds=30.0, parent=self)
+        self._detector_worker.event_captured.connect(self._on_event_captured)
+        self._detector_worker.start()
+
+    def _on_cancel_key_test(self):
+        if self._detector_worker and self._detector_worker.isRunning():
+            self._detector_worker.stop()
+        self.lbl_test_result.setText("Key test cancelled.")
+        self.lbl_test_result.setStyleSheet("color: #666666; font-size: 11px;")
+        self.btn_test.setEnabled(True)
+        self.btn_cancel_test.setEnabled(False)
+
+    def _on_event_captured(self, event_id: int | None, event_data: int | None, msg: str):
+        self.btn_test.setEnabled(True)
+        self.btn_cancel_test.setEnabled(False)
+
+        if event_id is not None:
+            is_compat, class_msg = classify_event(event_id, event_data)
+            if is_compat:
+                self.lbl_test_result.setText(
+                    f"✅ Verified! Received EventID={event_id}, EventData={event_data}.\nYour laptop is 100% compatible!"
+                )
+                self.lbl_test_result.setStyleSheet("color: #008000; font-weight: bold; font-size: 11px;")
+            else:
+                self.lbl_test_result.setText(
+                    f"⚠️ Received non-standard EventID={event_id}, EventData={event_data}.\n{class_msg}"
+                )
+                self.lbl_test_result.setStyleSheet("color: #d83b01; font-weight: bold; font-size: 11px;")
+        else:
+            self.lbl_test_result.setText(f"ℹ️ {msg}")
+            self.lbl_test_result.setStyleSheet("color: #666666; font-size: 11px;")
+
+    def closeEvent(self, event):
+        if self._detector_worker and self._detector_worker.isRunning():
+            self._detector_worker.stop()
+        super().closeEvent(event)
+
+
 class OmenConfiguratorWindow(QMainWindow):
     """Minimal, traditional Windows service manager style configurator."""
 
@@ -435,7 +655,7 @@ class OmenConfiguratorWindow(QMainWindow):
         self._is_updating_ui = False
 
         self.setWindowTitle("OMEN Button Service")
-        self.setFixedSize(460, 530)
+        self.setFixedSize(460, 560)
 
         # Normal minimize and close, no maximize
         self.setWindowFlags(
@@ -455,6 +675,7 @@ class OmenConfiguratorWindow(QMainWindow):
         self._load_current_configuration()
         self._start_discovery_worker()
         self._start_status_timer()
+        self._check_first_run()
 
     def _build_ui(self):
         """Construct a compact, clean Windows service control interface."""
@@ -510,6 +731,13 @@ class OmenConfiguratorWindow(QMainWindow):
         startup_row.addStretch()
         startup_row.addWidget(self.svc_feedback)
         svc_layout.addLayout(startup_row)
+
+        # Diagnostics row
+        diag_row = QHBoxLayout()
+        self.btn_diag = QPushButton("Hardware & Key Diagnostics...")
+        self.btn_diag.clicked.connect(self._open_diagnostics)
+        diag_row.addWidget(self.btn_diag)
+        svc_layout.addLayout(diag_row)
 
         main_layout.addWidget(svc_group)
 
@@ -730,6 +958,17 @@ class OmenConfiguratorWindow(QMainWindow):
         self._refresh_listener_status()
         self.svc_feedback.setText(msg)
         self.svc_feedback.setStyleSheet("color: #008000;" if success else "color: #C00000;")
+
+    def _check_first_run(self):
+        """Prompt diagnostics assistant if no app has been mapped yet."""
+        config = load_config()
+        if not config.get("selected_app"):
+            QTimer.singleShot(350, self._open_diagnostics)
+
+    def _open_diagnostics(self):
+        """Open the interactive hardware diagnostics and key test wizard."""
+        dlg = CompatibilityDialog(self)
+        dlg.exec()
 
 
 def main():

@@ -1,0 +1,35 @@
+============================================================
+ OMEN Button Mapper for Windows
+ Lightweight HP OMEN Key Remapper
+============================================================
+
+QUICK START GUIDE:
+------------------
+1. Extract all files from this zip archive to any folder
+   (e.g., C:\Tools\OmenButtonMapper or your User folder).
+
+2. Double-click 'OmenButtonConfigurator.exe'.
+   * If Windows SmartScreen appears ("Windows protected your PC"),
+     click "More info" and then "Run anyway".
+
+3. The Hardware Diagnostics Assistant will open:
+   - Confirms your HP device and WMI driver ('hpqBEvnt').
+   - Checks if OMEN Gaming Hub or other HP utilities are running.
+   - Allows you to test your physical OMEN key in real-time.
+   - Click "Continue to Button Mapper".
+
+4. Select your desired application from the list and click "Save Selection".
+
+5. Under "Listener Service":
+   - Check "Start service automatically on Windows sign-in".
+   - Click "Start" if the service is not already running.
+
+REQUIREMENTS & TIPS:
+--------------------
+• To prevent conflicts, uninstall or close 'OMEN Gaming Hub'.
+• Disable 'HP System Event Utility' in Task Manager Startup Apps if on-screen overlays appear.
+• Keep 'HP Application Enabling Services' driver installed in Device Manager (required for hardware key events).
+• Windows 10 (1809+) or Windows 11 (64-bit).
+
+Source code and updates:
+https://github.com/atharva-main/OMEN-Button-Mapper

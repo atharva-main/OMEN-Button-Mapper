@@ -17,23 +17,28 @@ The project provides two independent executables:
 - **Zero Console Flash**: Task Scheduler tasks and process lifecycle controls use native COM `Schedule.Service` and `CREATE_NO_WINDOW`, ensuring no console or command prompt window briefly flickers on startup, restart, or Windows sign-in.
 - **Minimal Service Applet UI**: The configurator features a traditional, minimal Windows service applet design with low memory consumption (~20 MB RAM), responsive filtering, and native system styling.
 - **Dynamic Configuration**: The listener re-reads the JSON configuration on every button press. Changes made in the GUI take effect immediately without needing to restart the background listener.
+- **Hardware & Key Diagnostics Wizard**: Built-in interactive assistant that verifies HP ACPI WMI drivers (`root\wmi:hpqBEvnt`), checks for conflicting HP background bloatware (OMEN Gaming Hub, HP System Event Utility), and provides live physical button detection.
 - **Session-Aware**: Operates entirely in the logged-in user's interactive desktop session using Windows Task Scheduler (avoiding Session 0 isolation issues).
 - **Zero Admin Rights Required**: Normal operation, configuration, and scheduled task registration run under the standard user account without requiring administrator privileges.
 - **Hardware-Safe**: Does not alter BIOS, drivers, firmware, or system services.
 
 ---
 
-## 2. Requirements
+## 2. Quick Download & Setup (For End Users)
 
-- **Operating System**: Windows 10 (version 1809+) or Windows 11 (64-bit).
-- **Hardware**: HP Victus / HP OMEN laptop generating the verified WMI event:
-  - WMI Namespace: `root\wmi`
-  - Event Class: `hpqBEvnt`
-  - `EventID`: `29`
-  - `EventData`: `8613`
-- **Development**:
-  - Python 3.12 (64-bit)
-  - PowerShell 5.1 or PowerShell 7+
+No Python or build tools required.
+
+1. **Download**: Go to [Releases](https://github.com/atharva-main/OMEN-Button-Mapper/releases) and download `OMEN-Button-Mapper-v1.0.0.zip`.
+2. **Extract**: Extract the zip contents to any convenient folder on your machine.
+3. **Run**: Double-click `OmenButtonConfigurator.exe`.
+   > **Note on Windows SmartScreen**: Because open-source tools do not purchase costly enterprise code-signing certificates, Windows may show *"Windows protected your PC"*. Simply click **More info** &rarr; **Run anyway**.
+4. **Diagnostics**: The built-in assistant will verify your laptop's HP ACPI driver and let you test the physical key.
+5. **Remap**: Select your desired application from the list, click **Save Selection**, enable **Start service automatically on Windows sign-in**, and click **Start**.
+
+### Requirements for Best Experience
+- **Uninstall or Close OMEN Gaming Hub**: Prevents HP's software from fighting for the key.
+- **Disable HP System Event Utility**: In Task Manager &rarr; Startup Apps if on-screen notifications appear.
+- **Keep HP System Drivers**: Keep *HP Application Enabling Services* installed in Device Manager (required for hardware key events).
 
 ---
 
@@ -42,10 +47,11 @@ The project provides two independent executables:
 ```text
 OMEN Button Mapper/
 ├── src/
-│   ├── configurator.py       # PySide6 GUI Configurator & Task Scheduler controls
+│   ├── configurator.py       # PySide6 GUI Configurator, diagnostics wizard & service controls
 │   ├── listener.py           # Background WMI event listener & single-instance daemon
+│   ├── compatibility.py      # Hardware inspection, conflict detection & live key listener
 │   ├── app_discovery.py      # Start Menu (.lnk) and Microsoft Store (AUMID) discovery
-│   └── app_launcher.py       # Launch execution, executable resolution & atomic config
+│   └── app_launcher.py       # Launch execution, window foreground activation & atomic config
 ├── assets/
 │   └── app_icon.ico          # Application multi-resolution icon
 ├── config/
