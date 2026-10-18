@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "selected_app": {
+    "name": "Microsoft Excel",
+    "launch_type": "executable",
+    "target": "excel.exe",
+    "arguments": [],
+    "working_directory": null
+  }
+}
